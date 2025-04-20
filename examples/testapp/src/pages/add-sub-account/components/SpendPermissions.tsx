@@ -1,6 +1,6 @@
 import { Box, Button } from '@chakra-ui/react';
 import { createCoinbaseWalletSDK, getCryptoKeyAccount } from '@coinbase/wallet-sdk';
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Hex } from 'viem';
 import { baseSepolia } from 'viem/chains';
 
@@ -78,9 +78,9 @@ export function SpendPermissions({
       });
 
       setState(response as string);
-      console.info('customlogs: response', response);
+      console.info('response', response);
     } catch (error) {
-      console.error('customlogs: error', error);
+      console.error('error', error);
     }
   }, [subAccountAddress, sdk]);
 
