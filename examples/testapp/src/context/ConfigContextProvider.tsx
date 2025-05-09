@@ -1,4 +1,5 @@
 import { Preference } from '@coinbase/wallet-sdk';
+import { SubAccountOptions } from '@coinbase/wallet-sdk/dist/core/provider/interface';
 import {
   Dispatch,
   ReactNode,
@@ -36,11 +37,15 @@ type ConfigContextType = {
   setSDKVersion: Dispatch<SetStateAction<SDKVersionType>>;
   setScwUrlAndSave: Dispatch<SetStateAction<ScwUrlType>>;
   setConfig: Dispatch<SetStateAction<Preference>>;
+  subAccountsConfig: SubAccountOptions;
+  setSubAccountsConfig: Dispatch<SetStateAction<SubAccountOptions>>;
 };
 
 const ConfigContext = createContext<ConfigContextType | null>(null);
 
-export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) => {
+export const ConfigContextProvider = ({
+  children,
+}: ConfigContextProviderProps) => {
   const [version, setVersion] = useState<SDKVersionType | undefined>(undefined);
   const [option, setOption] = useState<OptionsType | undefined>(undefined);
   const [scwUrl, setScwUrl] = useState<ScwUrlType | undefined>(undefined);
@@ -50,13 +55,20 @@ export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) 
       auto: false,
     },
   });
+  const [subAccountsConfig, setSAConfig] = useState<
+    SubAccountOptions | undefined
+  >(undefined);
 
   useEffect(
     function initializeSDKVersion() {
       if (version === undefined) {
-        const savedVersion = localStorage.getItem(SELECTED_SDK_KEY) as SDKVersionType;
+        const savedVersion = localStorage.getItem(
+          SELECTED_SDK_KEY
+        ) as SDKVersionType;
         setVersion(
-          sdkVersions.includes(savedVersion) ? (savedVersion as SDKVersionType) : sdkVersions[0]
+          sdkVersions.includes(savedVersion)
+            ? (savedVersion as SDKVersionType)
+            : sdkVersions[0]
         );
       }
     },
@@ -67,7 +79,7 @@ export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) 
     function initializeOption() {
       if (option === undefined) {
         const option = localStorage.getItem(OPTIONS_KEY) as OptionsType;
-        setOption(options.includes(option) ? (option as OptionsType) : 'all');
+        setOption(options.includes(option) ? (option as OptionsType) : "all");
       }
     },
     [option]
@@ -76,8 +88,14 @@ export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) 
   useEffect(
     function initializeScwUrl() {
       if (scwUrl === undefined) {
-        const savedScwUrl = localStorage.getItem(SELECTED_SCW_URL_KEY) as ScwUrlType;
-        setScwUrl(scwUrls.includes(savedScwUrl) ? (savedScwUrl as ScwUrlType) : scwUrls[0]);
+        const savedScwUrl = localStorage.getItem(
+          SELECTED_SCW_URL_KEY
+        ) as ScwUrlType;
+        setScwUrl(
+          scwUrls.includes(savedScwUrl)
+            ? (savedScwUrl as ScwUrlType)
+            : scwUrls[0]
+        );
       }
     },
     [scwUrl]
@@ -101,6 +119,13 @@ export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) 
     setScwUrl(url);
   }, []);
 
+  const setSubAccountsConfig = useCallback(
+    (subAccountsConfig: SubAccountOptions) => {
+      setSAConfig((prev) => ({ ...prev, ...subAccountsConfig }));
+    },
+    []
+  );
+
   const value = useMemo(() => {
     return {
       version,
@@ -111,16 +136,30 @@ export const ConfigContextProvider = ({ children }: ConfigContextProviderProps) 
       setSDKVersion,
       setScwUrlAndSave,
       setConfig,
+      subAccountsConfig,
+      setSubAccountsConfig,
     };
-  }, [version, option, scwUrl, config, setPreference, setSDKVersion, setScwUrlAndSave]);
+  }, [
+    version,
+    option,
+    scwUrl,
+    config,
+    setPreference,
+    setSDKVersion,
+    setScwUrlAndSave,
+    subAccountsConfig,
+    setSubAccountsConfig,
+  ]);
 
-  return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
+  return (
+    <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>
+  );
 };
 
 export function useConfig() {
   const context = useContext(ConfigContext);
   if (context === undefined) {
-    throw new Error('useConfig must be used within a ConfigContextProvider');
+    throw new Error("useConfig must be used within a ConfigContextProvider");
   }
   return context;
 }
