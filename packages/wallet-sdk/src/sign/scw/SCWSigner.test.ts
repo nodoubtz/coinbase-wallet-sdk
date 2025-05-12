@@ -1,10 +1,12 @@
-import { Mock, Mocked, vi } from 'vitest';
+import { Mock, MockInstance, Mocked, vi } from 'vitest';
 
 import { Communicator } from ':core/communicator/Communicator.js';
 import { CB_KEYS_URL } from ':core/constants.js';
 import { standardErrors } from ':core/error/errors.js';
 import { EncryptedData, RPCResponseMessage } from ':core/message/RPCMessage.js';
 import { AppMetadata, ProviderEventCallback, RequestArguments } from ':core/provider/interface.js';
+import { SpendLimit } from ':core/rpc/coinbase_fetchSpendPermissions.js';
+import { getClient } from ':store/chain-clients/utils.js';
 import { store } from ':store/store.js';
 import {
   decryptContent,
@@ -13,10 +15,33 @@ import {
   importKeyFromHexString,
 } from ':util/cipher.js';
 import { fetchRPCRequest } from ':util/provider.js';
+import { HttpRequestError, numberToHex } from 'viem';
 import { SCWKeyManager } from './SCWKeyManager.js';
 import { SCWSigner } from './SCWSigner.js';
+import { createSubAccountSigner } from './utils/createSubAccountSigner.js';
+import { findOwnerIndex } from './utils/findOwnerIndex.js';
+import { handleAddSubAccountOwner } from './utils/handleAddSubAccountOwner.js';
+import { handleInsufficientBalanceError } from './utils/handleInsufficientBalance.js';
 
+vi.mock(':store/chain-clients/utils.js', () => ({
+  getBundlerClient: vi.fn().mockReturnValue({}),
+  getClient: vi.fn().mockReturnValue({
+    request: vi.fn(),
+    chain: {
+      id: 84532,
+    },
+    waitForTransaction: vi.fn().mockResolvedValue({
+      status: 'success',
+    }),
+  }),
+  createClients: vi.fn(),
+}));
+
+vi.mock('./utils/handleInsufficientBalance.js', () => ({
+  handleInsufficientBalanceError: vi.fn(),
+}));
 vi.mock(':util/provider');
+vi.mock(':store/chain-clients/utils');
 vi.mock('./SCWKeyManager');
 vi.mock(':core/communicator/Communicator', () => ({
   Communicator: vi.fn(() => ({
@@ -29,6 +54,19 @@ vi.mock(':util/cipher', () => ({
   encryptContent: vi.fn(),
   exportKeyToHexString: vi.fn(),
   importKeyFromHexString: vi.fn(),
+}));
+
+vi.mock('./utils/handleAddSubAccountOwner.js', () => ({
+  handleAddSubAccountOwner: vi.fn(),
+}));
+
+vi.mock('./utils/findOwnerIndex.js', () => ({
+  findOwnerIndex: vi.fn().mockResolvedValue(1),
+}));
+vi.mock('./utils/createSubAccountSigner.js', () => ({
+  createSubAccountSigner: vi.fn().mockResolvedValue({
+    request: vi.fn().mockResolvedValue('0xSignature'),
+  }),
 }));
 
 const mockCryptoKey = {} as CryptoKey;
@@ -47,6 +85,8 @@ const mockSuccessResponse: RPCResponseMessage = {
   content: { encrypted: encryptedData },
   timestamp: new Date(),
 };
+const subAccountAddress = '0x7838d2724FC686813CAf81d4429beff1110c739a';
+const globalAccountAddress = '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54';
 
 describe('SCWSigner', () => {
   let signer: SCWSigner;
@@ -87,7 +127,7 @@ describe('SCWSigner', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
 
     store.account.clear();
@@ -122,7 +162,7 @@ describe('SCWSigner', () => {
       ]);
       expect(mockSetAccount).toHaveBeenNthCalledWith(1, {
         chain: {
-          id: 1,
+          id: 1,  
           rpcUrl: 'https://eth-rpc.example.com/1',
         },
       });
@@ -218,20 +258,29 @@ describe('SCWSigner', () => {
   });
 
   describe('request', () => {
+    let stateSpy: MockInstance;
+
     beforeAll(() => {
-      vi.spyOn(store, 'getState').mockImplementation(() => ({
+      stateSpy = vi.spyOn(store, 'getState').mockImplementation(() => ({
         account: {
           accounts: ['0xAddress'],
           chain: { id: 1, rpcUrl: 'https://eth-rpc.example.com/1' },
         },
         chains: [],
         keys: {},
+        spendLimits: {},
         config: {
           metadata: mockMetadata,
           preference: { keysUrl: CB_KEYS_URL, options: 'all' },
           version: '1.0.0',
         },
+        subAccountConfig: undefined,
       }));
+    });
+
+    afterAll(() => {
+      // For some reason vi.restoreAllMocks() doesn't work for this spy
+      stateSpy.mockRestore();
     });
 
     it('should perform a successful request', async () => {
@@ -375,7 +424,7 @@ describe('SCWSigner', () => {
     });
   });
 
-  describe('SCWSigner - wallet_connect', () => {
+  describe('wallet_connect', () => {
     it('should update internal state for successful wallet_connect', async () => {
       await signer.cleanup();
 
@@ -399,10 +448,10 @@ describe('SCWSigner', () => {
           value: {
             accounts: [
               {
-                address: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+                address: globalAccountAddress,
                 capabilities: {
                   addSubAccount: {
-                    address: '0x7838d2724FC686813CAf81d4429beff1110c739a',
+                    address: subAccountAddress,
                     factory: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
                     factoryData: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
                   },
@@ -419,11 +468,323 @@ describe('SCWSigner', () => {
         accounts: ['0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54'],
       });
       expect(mockCallback).toHaveBeenCalledWith('accountsChanged', [
-        '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
         '0x7838d2724FC686813CAf81d4429beff1110c739a',
+        '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
       ]);
 
       await signer.cleanup();
+    });
+  });
+
+  describe('wallet_addSubAccount', () => {
+    it('should update internal state for successful wallet_addSubAccount', async () => {
+      await signer.cleanup();
+
+      const mockRequest: RequestArguments = {
+        method: 'wallet_connect',
+        params: [],
+      };
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: null,
+        },
+      });
+      const mockSetAccount = vi.spyOn(store.account, 'set');
+
+      await signer.handshake({ method: 'handshake' });
+      expect(signer['accounts']).toEqual([]);
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: {
+            accounts: [
+              {
+                address: globalAccountAddress,
+                capabilities: {},
+              },
+            ],
+          },
+        },
+      });
+
+      await signer.request(mockRequest);
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: {
+            address: subAccountAddress,
+            factory: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+            factoryData: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+          },
+        },
+      });
+
+      await signer.request({
+        method: 'wallet_addSubAccount',
+        params: [
+          {
+            version: '1',
+            account: {
+              type: 'create',
+              keys: [
+                {
+                  key: '0x123',
+                  type: 'p256',
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      const accounts = await signer.request({ method: 'eth_accounts' });
+      expect(accounts).toEqual([subAccountAddress, globalAccountAddress]);
+
+      expect(mockSetAccount).toHaveBeenCalledWith({
+        accounts: [subAccountAddress, globalAccountAddress],
+      });
+    });
+  });
+
+  describe('auto sub account', () => {
+    beforeEach(async () => {
+      await signer.cleanup();
+
+      (getClient as Mock).mockReturnValue({
+        getChainId: vi.fn().mockReturnValue(84532),
+        waitForTransaction: vi.fn().mockResolvedValue({
+          status: 'success',
+        }),
+      });
+
+      vi.spyOn(store.subAccountsConfig, 'get').mockReturnValue({
+        enableAutoSubAccounts: true,
+      });
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: null,
+        },
+      });
+
+      await signer.handshake({ method: 'handshake' });
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: {
+            accounts: [
+              {
+                address: globalAccountAddress,
+                capabilities: {
+                  addSubAccount: {
+                    address: subAccountAddress,
+                    factory: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+                    factoryData: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    it('should create a sub account when eth_requestAccounts is called', async () => {
+      const mockRequest: RequestArguments = {
+        method: 'eth_requestAccounts',
+        params: [],
+      };
+
+      const accounts = await signer.request(mockRequest);
+      expect(accounts).toContain(subAccountAddress);
+    });
+
+    it('update the owner index for the sub account', async () => {
+      await signer.cleanup();
+
+      store.subAccounts.set({
+        address: '0x7838d2724FC686813CAf81d4429beff1110c739a',
+      });
+
+      (findOwnerIndex as Mock).mockResolvedValueOnce(-1);
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: null,
+        },
+      });
+
+      await signer.handshake({ method: 'handshake' });
+      expect(signer['accounts']).toEqual([]);
+
+      signer['accounts'] = ['0x7838d2724FC686813CAf81d4429beff1110c739a', '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54'];
+
+      const mockRequest: RequestArguments = {
+        method: 'wallet_sendCalls',
+        params: [
+          {
+            to: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+            version: '1',
+            calls: [],
+            from: '0x7838d2724FC686813CAf81d4429beff1110c739a',
+          },
+        ],
+      };
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: {
+            accounts: [
+              {
+                address: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+                capabilities: {
+                  addSubAccount: {
+                    address: '0x7838d2724FC686813CAf81d4429beff1110c739a',
+                    factory: '0xe6c7D51b0d5ECC217BE74019447aeac4580Afb54',
+                    factoryData: '0x',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+
+      await signer.request(mockRequest);
+
+      expect(handleAddSubAccountOwner).toHaveBeenCalled();
+    });
+
+    it('should handle insufficient balance error if external funding source is present', async () => {
+      vi.spyOn(store.subAccountsConfig, 'get').mockReturnValue({
+        enableAutoSubAccounts: true,
+        dynamicSpendLimits: true,
+      });
+
+      (createSubAccountSigner as Mock).mockImplementation(async () => {
+        const request = vi.fn((args) => {
+          throw new HttpRequestError({
+            body: args,
+            url: 'https://eth-rpc.example.com/1',
+            details: JSON.stringify({
+              code: -32090,
+              message: 'transfer amount exceeds balance',
+              data: {
+                type: 'INSUFFICIENT_FUNDS',
+                reason: 'NO_SUITABLE_SPEND_PERMISSION_FOUND',
+                account: {
+                  address: subAccountAddress,
+                },
+                required: {
+                  '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee': {
+                    amount: '0x38d7ea4c68000',
+                    sources: [
+                      {
+                        address: globalAccountAddress,
+                        balance: '0x1d73b609302000',
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+          });
+        });
+
+        return {
+          request,
+        };
+      });
+
+      await signer.request({
+        method: 'eth_requestAccounts',
+        params: [],
+      });
+
+      const mockRequest: RequestArguments = {
+        method: 'wallet_sendCalls',
+        params: [
+          {
+            calls: [
+              {
+                to: '0x',
+                value: '0x0',
+                data: '0x',
+              },
+            ],
+            chainId: numberToHex(84532),
+            from: subAccountAddress,
+            version: '1.0',
+          },
+        ],
+      };
+
+      signer = new SCWSigner({
+        metadata: mockMetadata,
+        communicator: mockCommunicator,
+        callback: mockCallback,
+      });
+
+      await signer.request(mockRequest);
+
+      expect(handleInsufficientBalanceError).toHaveBeenCalled();
+
+      (createSubAccountSigner as Mock).mockRestore();
+    });
+  });
+
+  describe('coinbase_fetchPermissions', () => {
+    const mockSpendLimits = [
+      {
+        permissionHash: '0xPermissionHash',
+        signature: '0xSignature',
+        permission: {
+          account: '0xAddress',
+          spender: '0xSubAccount',
+        },
+      },
+    ] as [SpendLimit];
+
+    beforeEach(() => {
+      vi.spyOn(store, 'getState').mockImplementation(() => ({
+        account: {
+          accounts: ['0xAddress'],
+          chain: { id: 10, rpcUrl: 'https://eth-rpc.example.com/10' },
+        },
+        subAccount: {
+          address: '0xSubAccount',
+        },
+        chains: [],
+        keys: {},
+        spendLimits: {},
+        config: {
+          metadata: mockMetadata,
+          preference: { keysUrl: CB_KEYS_URL, options: 'all' },
+          version: '1.0.0',
+        },
+      }));
+
+      (fetchRPCRequest as Mock).mockResolvedValue({
+        permissions: mockSpendLimits,
+      });
+    });
+
+    it('should update internal state for successful coinbase_fetchPermissions', async () => {
+      await signer.cleanup();
+
+      const mockRequest: RequestArguments = {
+        method: 'coinbase_fetchPermissions',
+      };
+
+      signer['accounts'] = ['0xAddress']; // mock the logged in state
+
+      const mockSetSpendLimits = vi.spyOn(store.spendLimits, 'set');
+
+      await signer.request(mockRequest);
+
+      expect(mockSetSpendLimits).toHaveBeenCalledWith({
+        '10': mockSpendLimits,
+      });
     });
   });
 });
