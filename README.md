@@ -1,3 +1,5 @@
+[![CodeQL Advanced](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml/badge.svg)](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml)
+
 # Coinbase Wallet SDK
 
 [![License](https://img.shields.io/github/license/nodoubtz/coinbase-wallet-sdk)](LICENSE)
