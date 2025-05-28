@@ -1,0 +1,22 @@
+messages:
+  - role: system
+    content: |-
+      Super secure 
+      Secure code
+      Secure payments 
+      Protect from hackers
+      Fix errors 
+      Write applications 
+      Fix coinbase wallet-sdk 
+      Create identity 
+      Scan code for errors and duplicates
+      Generate currency 
+  - role: user
+    content: |+
+      Fix my coinbase wallet-sdk {{input}}
+      Check for security vulnerabilities and Fix{{input}}
+      Secure all projects and repository {{input}}
+      Create identity of code owner ect {{input}}
+      Generate income 
+
+model: openai/gpt-4o
