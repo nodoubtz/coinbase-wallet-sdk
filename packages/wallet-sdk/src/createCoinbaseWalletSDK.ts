@@ -9,6 +9,7 @@ import {
 } from ':core/provider/interface.js';
 import { AddSubAccountAccount } from ':core/rpc/wallet_addSubAccount.js';
 import { WalletConnectResponse } from ':core/rpc/wallet_connect.js';
+import { loadTelemetryScript } from ':core/telemetry/initCCA.js';
 import { abi } from ':sign/scw/utils/constants.js';
 import { assertPresence } from ':util/assertPresence.js';
 import { checkCrossOriginOpenerPolicy } from ':util/checkCrossOriginOpenerPolicy.js';
@@ -57,8 +58,7 @@ export function createCoinbaseWalletSDK(params: CreateCoinbaseWalletSDKOptions) 
   store.subAccountsConfig.set({
     toOwnerAccount: params.subAccounts?.toOwnerAccount,
     enableAutoSubAccounts: params.subAccounts?.enableAutoSubAccounts,
-    defaultSpendLimits: params.subAccounts?.defaultSpendLimits,
-    dynamicSpendLimits: params.subAccounts?.dynamicSpendLimits,
+    defaultSpendPermissions: params.subAccounts?.defaultSpendPermissions,
   });
 
   // set the options in the store
@@ -69,6 +69,11 @@ export function createCoinbaseWalletSDK(params: CreateCoinbaseWalletSDKOptions) 
 
   // check the cross origin opener policy
   void checkCrossOriginOpenerPolicy();
+
+  // load the telemetry script
+  if (options.preference.telemetry !== false) {
+    void loadTelemetryScript();
+  }
 
   // Validate user supplied preferences. Throws if key/values are not valid.
   validatePreferences(options.preference);
@@ -110,7 +115,7 @@ export function createCoinbaseWalletSDK(params: CreateCoinbaseWalletSDKOptions) 
           method: 'wallet_connect',
           params: [
             {
-              version: 1,
+              version: '1',
               capabilities: {},
             },
           ],
@@ -162,7 +167,7 @@ export function createCoinbaseWalletSDK(params: CreateCoinbaseWalletSDKOptions) 
               calls,
               chainId: toHex(chainId),
               from: account.accounts?.[0],
-              version: 1,
+              version: '1',
             },
           ],
         })) as string;
