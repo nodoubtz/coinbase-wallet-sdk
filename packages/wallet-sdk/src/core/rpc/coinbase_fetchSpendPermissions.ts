@@ -12,13 +12,15 @@ export type EmptyFetchPermissionsRequest = Omit<FetchPermissionsRequest, 'params
 /**
  * Represents a spending permission with limits
  */
-export type SpendLimit = {
+export type SpendPermission = {
   /** UTC timestamp for when the permission was granted */
   createdAt?: number;
   /** Hash of the permission in hex format */
   permissionHash?: string;
   /** Cryptographic signature in hex format */
   signature: string;
+  /** Chain ID */
+  chainId?: number;
   /** The permission details */
   permission: {
     /** Wallet address of the account */
@@ -43,5 +45,5 @@ export type SpendLimit = {
 };
 
 export type FetchPermissionsResponse = {
-  permissions: SpendLimit[];
+  permissions: SpendPermission[];
 };

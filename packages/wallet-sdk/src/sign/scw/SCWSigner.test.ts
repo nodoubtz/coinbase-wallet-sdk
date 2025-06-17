@@ -5,7 +5,7 @@ import { CB_KEYS_URL } from ':core/constants.js';
 import { standardErrors } from ':core/error/errors.js';
 import { EncryptedData, RPCResponseMessage } from ':core/message/RPCMessage.js';
 import { AppMetadata, ProviderEventCallback, RequestArguments } from ':core/provider/interface.js';
-import { SpendLimit } from ':core/rpc/coinbase_fetchSpendPermissions.js';
+import { SpendPermission } from ':core/rpc/coinbase_fetchSpendPermissions.js';
 import { getClient } from ':store/chain-clients/utils.js';
 import { store } from ':store/store.js';
 import {
@@ -222,7 +222,7 @@ describe('SCWSigner', () => {
   });
 
   describe('request - ephemeral signer', () => {
-    it.each(['wallet_sendCalls'])(
+    it.each(['wallet_sendCalls', 'wallet_sign'])(
       'should perform a successful request after handshake',
       async (method) => {
         const mockRequest: RequestArguments = { method };
@@ -268,7 +268,7 @@ describe('SCWSigner', () => {
         },
         chains: [],
         keys: {},
-        spendLimits: {},
+        spendPermissions: [],
         config: {
           metadata: mockMetadata,
           preference: { keysUrl: CB_KEYS_URL, options: 'all' },
@@ -674,6 +674,83 @@ describe('SCWSigner', () => {
       const ethAccounts = await signer.request({ method: 'eth_accounts' });
       expect(ethAccounts).toEqual([subAccountAddress, globalAccountAddress]);
     });
+
+    it('should use cached response for subsequent wallet_connect calls', async () => {
+      // First wallet_connect call
+      const mockRequest: RequestArguments = {
+        method: 'wallet_connect',
+        params: [],
+      };
+
+      const mockSpendPermissions = [
+        {
+          permissionHash: '0xPermissionHash',
+          signature: '0xSignature',
+          chainId: 1,
+          permission: {
+            account: globalAccountAddress,
+            spender: subAccountAddress,
+          },
+        },
+      ];
+
+      (decryptContent as Mock).mockResolvedValueOnce({
+        result: {
+          value: {
+            accounts: [
+              {
+                address: globalAccountAddress,
+                capabilities: {
+                  subAccounts: [
+                    {
+                      address: subAccountAddress,
+                      factory: globalAccountAddress,
+                      factoryData: '0x',
+                    },
+                  ],
+                  spendPermissions: {
+                    permissions: mockSpendPermissions,
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+
+      // First wallet_connect call
+      await signer.request(mockRequest);
+
+      // Reset decryptContent mock to verify it's not called again
+      (decryptContent as Mock).mockReset();
+
+      // Second wallet_connect call
+      const cachedResponse = await signer.request(mockRequest);
+
+      // Verify decryptContent was not called for the second request
+      expect(decryptContent).not.toHaveBeenCalled();
+
+      // Verify cached response matches expected format
+      expect(cachedResponse).toEqual({
+        accounts: [
+          {
+            address: globalAccountAddress,
+            capabilities: {
+              subAccounts: [
+                {
+                  address: subAccountAddress,
+                  factory: globalAccountAddress,
+                  factoryData: '0x',
+                },
+              ],
+              spendPermissions: {
+                permissions: mockSpendPermissions,
+              },
+            },
+          },
+        ],
+      });
+    });
   });
 
   describe('wallet_addSubAccount', () => {
@@ -788,6 +865,10 @@ describe('SCWSigner', () => {
         },
       });
 
+      // Clear previous mock calls to isolate the wallet_addSubAccount call
+      mockCommunicator.postRequestAndWaitForResponse.mockClear();
+      (encryptContent as Mock).mockClear();
+
       await signer.request({
         method: 'wallet_addSubAccount',
         params: [
@@ -799,6 +880,31 @@ describe('SCWSigner', () => {
           },
         ],
       });
+
+      // Verify that encryptContent was called with a request containing populated keys
+      expect(encryptContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: expect.objectContaining({
+            method: 'wallet_addSubAccount',
+            params: [
+              {
+                version: '1',
+                account: {
+                  type: 'create',
+                  keys: expect.arrayContaining([
+                    expect.objectContaining({
+                      type: expect.any(String),
+                      publicKey: expect.any(String),
+                    }),
+                  ]),
+                },
+              },
+            ],
+          }),
+          chainId: expect.any(Number),
+        }),
+        mockCryptoKey
+      );
 
       const accounts = await signer.request({ method: 'eth_accounts' });
       expect(accounts).toEqual([subAccountAddress, globalAccountAddress]);
@@ -921,11 +1027,6 @@ describe('SCWSigner', () => {
     });
 
     it('should handle insufficient balance error if external funding source is present', async () => {
-      vi.spyOn(store.subAccountsConfig, 'get').mockReturnValue({
-        enableAutoSubAccounts: true,
-        dynamicSpendLimits: true,
-      });
-
       (createSubAccountSigner as Mock).mockImplementation(async () => {
         const request = vi.fn((args) => {
           throw new HttpRequestError({
@@ -998,8 +1099,225 @@ describe('SCWSigner', () => {
     });
   });
 
+  describe('wallet_getCapabilities', () => {
+    let stateSpy: MockInstance;
+
+    beforeEach(() => {
+      stateSpy = vi.spyOn(store, 'getState').mockImplementation(() => ({
+        account: {
+          accounts: [globalAccountAddress],
+          capabilities: {
+            '0x1': { 
+              atomicBatch: { supported: true },
+              paymasterService: { supported: true }
+            },
+            '0x5': {
+              atomicBatch: { supported: false }
+            },
+            '0xa': {
+              paymasterService: { supported: true }
+            }
+          },
+        },
+        chains: [],
+        keys: {},
+        spendPermissions: [],
+        config: {
+          metadata: mockMetadata,
+          preference: { keysUrl: CB_KEYS_URL, options: 'all' },
+          version: '1.0.0',
+        },
+      }));
+
+      signer['accounts'] = [globalAccountAddress];
+    });
+
+    afterEach(() => {
+      stateSpy.mockRestore();
+    });
+
+    it('should return all capabilities when no filter is provided', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({
+        '0x1': { 
+          atomicBatch: { supported: true },
+          paymasterService: { supported: true }
+        },
+        '0x5': {
+          atomicBatch: { supported: false }
+        },
+        '0xa': {
+          paymasterService: { supported: true }
+        }
+      });
+    });
+
+    it('should return filtered capabilities when chain filter is provided', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, ['0x1', '0xa']],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({
+        '0x1': { 
+          atomicBatch: { supported: true },
+          paymasterService: { supported: true }
+        },
+        '0xa': {
+          paymasterService: { supported: true }
+        }
+      });
+    });
+
+    it('should handle different hex formatting in filters', async () => {
+      // Test that '0x01' matches '0x1' capability
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, ['0x01', '0x05']],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({
+        '0x1': { 
+          atomicBatch: { supported: true },
+          paymasterService: { supported: true }
+        },
+        '0x5': {
+          atomicBatch: { supported: false }
+        }
+      });
+    });
+
+    it('should return empty object when filter matches no capabilities', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, ['0x99', '0x100']],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({});
+    });
+
+    it('should return empty object when capabilities is undefined', async () => {
+      stateSpy.mockImplementation(() => ({
+        account: {
+          accounts: [globalAccountAddress],
+          capabilities: undefined,
+        },
+        chains: [],
+        keys: {},
+        spendPermissions: [],
+        config: {
+          metadata: mockMetadata,
+          preference: { keysUrl: CB_KEYS_URL, options: 'all' },
+          version: '1.0.0',
+        },
+      }));
+
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({});
+    });
+
+    it('should return empty object when empty filter array is provided', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, []],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({
+        '0x1': { 
+          atomicBatch: { supported: true },
+          paymasterService: { supported: true }
+        },
+        '0x5': {
+          atomicBatch: { supported: false }
+        },
+        '0xa': {
+          paymasterService: { supported: true }
+        }
+      });
+    });
+
+    it('should handle capabilities with non-hex keys gracefully', async () => {
+      stateSpy.mockImplementation(() => ({
+        account: {
+          accounts: [globalAccountAddress],
+          capabilities: {
+            '0x1': { atomicBatch: { supported: true } },
+            'invalid-key': { someFeature: true },
+            '0x5': { paymasterService: { supported: true } }
+          },
+        },
+        chains: [],
+        keys: {},
+        spendPermissions: [],
+        config: {
+          metadata: mockMetadata,
+          preference: { keysUrl: CB_KEYS_URL, options: 'all' },
+          version: '1.0.0',
+        },
+      }));
+
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, ['0x1']],
+      };
+
+      const result = await signer.request(request);
+
+      expect(result).toEqual({
+        '0x1': { atomicBatch: { supported: true } }
+      });
+    });
+
+    it('should throw error when account is not in accounts list', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [subAccountAddress],
+      };
+
+      await expect(signer.request(request)).rejects.toThrow('no active account found');
+    });
+
+    it('should throw error when account parameter is invalid', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: ['invalid-address'],
+      };
+
+      await expect(signer.request(request)).rejects.toThrow();
+    });
+
+    it('should throw error when filter contains invalid hex strings', async () => {
+      const request = {
+        method: 'wallet_getCapabilities',
+        params: [globalAccountAddress, ['0x1', 'invalid-hex']],
+      };
+
+      await expect(signer.request(request)).rejects.toThrow();
+    });
+  });
+
   describe('coinbase_fetchPermissions', () => {
-    const mockSpendLimits = [
+    const mockSpendPermissions = [
       {
         permissionHash: '0xPermissionHash',
         signature: '0xSignature',
@@ -1007,8 +1325,9 @@ describe('SCWSigner', () => {
           account: '0xAddress',
           spender: '0xSubAccount',
         },
+        chainId: 10,
       },
-    ] as [SpendLimit];
+    ] as [SpendPermission];
 
     beforeEach(() => {
       vi.spyOn(store, 'getState').mockImplementation(() => ({
@@ -1021,7 +1340,7 @@ describe('SCWSigner', () => {
         },
         chains: [],
         keys: {},
-        spendLimits: {},
+        spendPermissions: [],
         config: {
           metadata: mockMetadata,
           preference: { keysUrl: CB_KEYS_URL, options: 'all' },
@@ -1030,7 +1349,7 @@ describe('SCWSigner', () => {
       }));
 
       (fetchRPCRequest as Mock).mockResolvedValue({
-        permissions: mockSpendLimits,
+        permissions: mockSpendPermissions,
       });
     });
 
@@ -1043,13 +1362,11 @@ describe('SCWSigner', () => {
 
       signer['accounts'] = ['0xAddress']; // mock the logged in state
 
-      const mockSetSpendLimits = vi.spyOn(store.spendLimits, 'set');
+      const mockSetSpendPermissions = vi.spyOn(store.spendPermissions, 'set');
 
       await signer.request(mockRequest);
 
-      expect(mockSetSpendLimits).toHaveBeenCalledWith({
-        '10': mockSpendLimits,
-      });
+      expect(mockSetSpendPermissions).toHaveBeenCalledWith(mockSpendPermissions);
     });
   });
 });
