@@ -35,7 +35,7 @@ export interface ProviderInterface extends ProviderEventEmitter {
 
 export type ProviderEventCallback = ProviderInterface['emit'];
 
-export type SpendLimitConfig = {
+export type SpendPermissionConfig = {
   token: Address;
   allowance: Hex;
   period: number;
@@ -82,6 +82,11 @@ export type Preference = {
    * the Smart Wallet will generate a 16 byte hex string from the apps origin.
    */
   attribution?: Attribution;
+  /**
+   * Whether to enable functional telemetry.
+   * @default true
+   */
+  telemetry?: boolean;
 } & Record<string, unknown>;
 
 export type SubAccountOptions = {
@@ -92,10 +97,10 @@ export type SubAccountOptions = {
    */
   toOwnerAccount?: ToOwnerAccountFn;
   /**
-   * Spend limits requested on app connect if a matching existing one does not exist.
+   * Spend permissions requested on app connect if a matching existing one does not exist.
    * Only supports native chain tokens currently.
    */
-  defaultSpendLimits?: Record<number, SpendLimitConfig[]>;
+  defaultSpendPermissions?: Record<number, SpendPermissionConfig[]>;
 };
 
 export interface ConstructorOptions {

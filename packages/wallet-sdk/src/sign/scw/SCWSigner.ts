@@ -139,7 +139,8 @@ export class SCWSigner implements Signer {
           const modifiedRequest = injectRequestCapabilities(request, capabilitiesToInject);
           return this.sendRequestToPopup(modifiedRequest);
         }
-        case 'wallet_sendCalls': {
+        case 'wallet_sendCalls':
+        case 'wallet_sign': {
           return this.sendRequestToPopup(request);
         }
         default:
@@ -218,7 +219,7 @@ export class SCWSigner implements Signer {
           CB_WALLET_RPC_URL
         )) as FetchPermissionsResponse;
         const requestedChainId = hexToNumber(completeRequest.params?.[0].chainId);
-        store.spendLimits.set(
+        store.spendPermissions.set(
           permissions.permissions.map((permission) => ({
             ...permission,
             chainId: requestedChainId,
@@ -296,10 +297,10 @@ export class SCWSigner implements Signer {
           this.accounts = prependWithoutDuplicates(this.accounts, subAccount.address);
         }
 
-        const spendLimits = response?.accounts?.[0].capabilities?.spendLimits;
+        const spendPermissions = response?.accounts?.[0].capabilities?.spendPermissions;
 
-        if (spendLimits && 'permissions' in spendLimits) {
-          store.spendLimits.set(spendLimits?.permissions);
+        if (spendPermissions && 'permissions' in spendPermissions) {
+          store.spendPermissions.set(spendPermissions?.permissions);
         }
 
         this.callback?.('accountsChanged', accounts_);
@@ -496,7 +497,7 @@ export class SCWSigner implements Signer {
       Array.isArray(request.params) &&
       request.params.length > 0 &&
       request.params[0].account &&
-      request.params[0].type === 'create'
+      request.params[0].account.type === 'create'
     ) {
       let keys: { type: string; publicKey: string }[];
       if (request.params[0].account.keys && request.params[0].account.keys.length > 0) {
@@ -595,17 +596,17 @@ export class SCWSigner implements Signer {
         ? ownerAccount.account.address
         : ownerAccount.account.publicKey;
 
-    const ownerIndex = await findOwnerIndex({
+    let ownerIndex = await findOwnerIndex({
       address: subAccount.address,
-      publicKey,
-      client,
       factory: subAccount.factory,
       factoryData: subAccount.factoryData,
+      publicKey,
+      client,
     });
 
     if (ownerIndex === -1) {
       try {
-        await handleAddSubAccountOwner({
+        ownerIndex = await handleAddSubAccountOwner({
           ownerAccount: ownerAccount.account,
           globalAccountRequest: this.sendRequestToPopup.bind(this),
         });
@@ -622,6 +623,7 @@ export class SCWSigner implements Signer {
       factoryData: subAccount.factoryData,
       parentAddress: globalAccountAddress,
       attribution: dataSuffix ? { suffix: dataSuffix } : undefined,
+      ownerIndex,
     });
 
     try {
