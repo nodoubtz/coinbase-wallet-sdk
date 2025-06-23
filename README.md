@@ -1,4 +1,4 @@
-[![CodeQL Advanced](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml/badge.svg)](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml)
+[![CodeQL Advanced](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml/badge.svg?branch=main)](https://github.com/nodoubtz/coinbase-wallet-sdk/actions/workflows/2codeql.yml)
 
 # Coinbase Wallet SDK
 
